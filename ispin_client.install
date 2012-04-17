@@ -1,0 +1,38 @@
+<?php
+
+function ispin_client_schema(){
+	$schema = array();
+
+	$schema['ispin_client_councils'] = array(
+		'description' => t('Stores cached council details.'),
+		'fields' => array(
+			'unitID' => array(
+				'type' => 'int',
+				'unsigned' => TRUE,
+				'not null' => TRUE,
+				'description' => t('The Ordnance Survey Unit ID for the council\'s area.')
+			),
+
+			'notation' => array(
+				'description' => t('The data.gov.uk reference ID for the council.'),
+				'type' => 'varchar',
+				'not null' => TRUE,
+				'length' => '4',
+				'default' => ''
+			),
+
+			'title'	=> array(
+				'description' => t('The council\'s proper name.'),
+				'type' => 'varchar',
+				'not null' => TRUE,
+				'length' => '64',
+				'default' => ''
+			)
+		),
+		'primary key' => array('unitID'),
+		'unique keys' => array('notation' => array('notation')),
+		'indexes' => array(),
+	);
+
+	return $schema;
+}

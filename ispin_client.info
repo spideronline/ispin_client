@@ -1,0 +1,6 @@
+name = ISPIN Client
+description = Creates a block to display Public Information Notice locations from TellMe's SPARQL interface on an OS map.
+core = 7.x
+files[] = phpcoord.class
+configure = admin/config/content/ispin-client
+

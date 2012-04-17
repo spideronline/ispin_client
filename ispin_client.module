@@ -1,0 +1,525 @@
+<?php
+/**
+ * @file
+ * A block module that displays Public Information Notices from TellMe's SPARQL endpoint on an OS map.
+ */
+
+
+
+
+
+
+define('ISPIN_CLIENT_ORG_SOURCE', 'http://services.data.gov.uk/statistics/sparql');
+
+define('ISPIN_CLIENT_ORG_QUERY', '
+PREFIX owl:     <http://www.w3.org/2002/07/owl#>
+PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX skos:    <http://www.w3.org/2004/02/skos/core#>
+PREFIX stats0:  <http://statistics.data.gov.uk/def/administrative-geography/>
+PREFIX stats1:  <http://statistics.data.gov.uk/def/administrative-geography/administrative-geography/>
+PREFIX statsid: <http://statistics.data.gov.uk/id/country/>
+
+SELECT ?title ?notation ?unitURI
+WHERE {
+    ?auth   rdf:type        stats0:LocalAuthority   .
+    ?auth   skos:prefLabel  ?title                  .
+    ?auth   skos:notation   ?notation               .
+    ?auth   stats0:coverage ?cover                  .
+    ?cover  stats0:country  statsid:923             .
+    ?cover  owl:sameAs      ?unitURI                .
+}
+ORDER BY ?label');
+
+define('ISPIN_CLIENT_PIN_SOURCE', 'http://tellme.spideronline.co.uk/ispin/sparql');
+
+define('ISPIN_CLIENT_PIN_QUERY', '
+PREFIX dct:     <http://purl.org/dc/terms/>
+PREFIX georss:  <http://www.georss.org/georss/>
+PREFIX stats:   <http://statistics.data.gov.uk/id/local-authority/>
+
+SELECT ?coords ?notice
+WHERE {
+    ?notice dct:creator     stats:##org##           .
+    ?notice georss:point    ?coords                 .
+}
+ORDER BY DESC(?coords)');
+
+define('ISPIN_CLIENT_MAP_SOURCE', 'http://api.talis.com/stores/ordnance-survey/services/sparql');
+
+define('ISPIN_CLIENT_MAP_QUERY', '
+PREFIX geo:     <http://data.ordnancesurvey.co.uk/ontology/spatialrelations/>
+PREFIX admin:   <http://data.ordnancesurvey.co.uk/ontology/admingeo/>
+
+SELECT ?northing ?easting
+WHERE {
+    ?item   admin:hasUnitID \'##org##\'               .
+    ?item   geo:northing    ?northing               .
+    ?item   geo:easting     ?easting                .
+}');
+
+
+
+
+
+
+
+/**
+ * Implements hook_help.
+ *
+ * Displays help and module information.
+ *
+ * @param path
+ *   Which path of the site we're using to display help
+ * @param arg
+ *   Array that holds the current path as returned from arg() function
+ */
+function ispin_client_help($path, $arg) {
+    switch ($path) {
+        case "admin/help#ispin_client":
+            return '<p>'.t("Displays links to public information notices in the specified council area.").'</p>';
+            break;
+    }
+}
+
+
+
+/**
+ * Implements hook_block_info().
+ */
+function ispin_client_block_info() {
+    $blocks['ispin_client'] = array(
+        'info' => t('ISPIN Client'),             // The name that will appear in the block list.
+        'cache' => DRUPAL_CACHE_PER_ROLE,       // Default
+    );
+
+    return $blocks;
+}
+
+
+
+/**
+ * Implements hook_init().
+ */
+function ispin_client_init() {
+    drupal_add_js('http://openspace.ordnancesurvey.co.uk/osmapapi/openspace.js?key='.variable_get('ispin_client_os_key', ''), 'external');
+    drupal_add_js(drupal_get_path('module', 'ispin_client').'/ispin_client.js');
+}
+
+
+
+/**
+ * Implements hook_menu().
+ */
+function ispin_client_menu() {
+    $items = array();
+
+    $items['admin/config/content/ispin_client'] = array(
+        'title' => 'ISPIN Client',
+        'description' => 'Configuration for ISPIN Client module',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('ispin_client_form'),
+        'access arguments' => array('access administration pages'),
+        'type' => MENU_NORMAL_ITEM,
+    );
+
+    $items['ispin_client/%'] = array(
+        'title' => 'Collect PINs',
+        'page callback' => 'ispin_client_notices',
+        'page arguments' => array(1),
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK,
+    );
+
+    return $items;
+}
+
+
+
+/**
+ * Page callback: ISPIN Client settings
+ *
+ * @see ispin_client_menu()
+ */
+function ispin_client_form($form, &$form_state) {
+    $form['ispin_client_os_key'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Open Space key'),
+        '#default_value' => variable_get('ispin_client_os_key', ''),
+        '#size' => 60,
+        '#maxlength' => 32,
+        '#description' => t('Open Space key as supplied by Ordnance Survey.'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_org_source'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Council source URL'),
+        '#default_value' => variable_get('ispin_client_org_source', ISPIN_CLIENT_ORG_SOURCE),
+        '#size' => 60,
+        '#maxlength' => 255,
+        '#description' => t('URL to the council source SPARQL endpoint.'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_org_query'] = array(
+        '#type' => 'textarea',
+        '#title' => t('Council source query'),
+        '#default_value' => variable_get('ispin_client_org_query', ISPIN_CLIENT_ORG_QUERY),
+        '#description' => t('SPARQL query to get the list of councils.'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_pin_source'] = array(
+        '#type' => 'textfield',
+        '#title' => t('PIN source URL'),
+        '#default_value' => variable_get('ispin_client_pin_source', ISPIN_CLIENT_PIN_SOURCE),
+        '#size' => 60,
+        '#maxlength' => 255,
+        '#description' => t('URL to the PIN source SPARQL endpoint.'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_pin_query'] = array(
+        '#type' => 'textarea',
+        '#title' => t('PIN source query'),
+        '#default_value' => variable_get('ispin_client_pin_query', ISPIN_CLIENT_PIN_QUERY),
+        '#description' => t('SPARQL query to get the list of notices. Use ##org## to substitute the required council'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_map_source'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Map source URL'),
+        '#default_value' => variable_get('ispin_client_map_source', ISPIN_CLIENT_MAP_SOURCE),
+        '#size' => 60,
+        '#maxlength' => 255,
+        '#description' => t('URL to the map source SPARQL endpoint.'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_map_query'] = array(
+        '#type' => 'textarea',
+        '#title' => t('Map source query'),
+        '#default_value' => variable_get('ispin_client_map_query', ISPIN_CLIENT_MAP_QUERY),
+        '#description' => t('SPARQL query to get the list of notices. Use ##org## to substitute the required council'),
+        '#required' => TRUE,
+    );
+
+    $form['ispin_client_debug'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Debug'),
+        '#default_value' => variable_get('ispin_client_debug', 0),
+        '#description' => t('Debug the SPARQL cURL calls.'),
+    );
+
+    return system_settings_form($form);
+}
+
+
+
+
+/**
+ * Implements hook_block_view().
+ *
+ * Prepares the contents of the block.
+ */
+function ispin_client_block_view($delta='') {
+    switch ($delta) {
+        case 'ispin_client':
+            $block['subject'] = t('PINs');
+
+            if (user_access('access content')) {
+                $block['content'] = '<select id="ispin_client_council">
+                <option>Select a council...</option>';
+                
+                foreach (ispin_client_councils() as $c) $block['content'] .= '
+                <option notation="'.$c->notation.'" unitID="'.(empty($c->unitID) ? $c->unitid: $c->unitID).'">'.$c->title.'</option>';
+                
+                // Note hack that is required by the pile of wank that is Drupal's fetchAssoc method ^^
+                
+                $block['content'] .= '
+        </select>
+        <div id="ispin_client_map" style="width: 750px; height: 600px; border: 1px solid black;"></div>';
+            }
+        break;
+    }
+
+    return $block;
+}
+
+
+
+
+/**
+ * Custom content function.
+ *
+ * If available, retrieve list of councils from database;
+ * if not, retrieve by SPARQL from government site.
+ *
+ * @return
+ *   A list of councils.
+ */
+function ispin_client_councils() {
+    $query = db_select('ispin_client_councils', 'c')->fields('c', array('unitID', 'notation', 'title'))->orderBy('title', 'ASC')->execute()->fetchAll();
+
+    if (!$query) $query = ispin_client_councils_live();
+    
+    return $query;
+}
+
+
+
+/**
+ * Custom content function.
+ *
+ * Retrieve list of by SPARQL from government site.
+ * Run daily by cron and on-demand by ispin_client_councils().
+ *
+ * @return
+ *   A list of councils.
+ */
+function ispin_client_councils_live() {
+    $debug = variable_get('ispin_client_debug', 0);
+    $source = variable_get('ispin_client_org_source', ISPIN_CLIENT_ORG_SOURCE);
+    $query = variable_get('ispin_client_org_query', ISPIN_CLIENT_ORG_QUERY);
+
+
+    $curl = curl_init();
+
+    curl_setopt($curl, CURLOPT_HEADER, $debug);
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
+    curl_setopt($curl, CURLOPT_TIMEOUT, 60);
+    curl_setopt($curl, CURLOPT_HTTPHEADER, array(
+        'Accept: application/json',
+        'Accept-Encoding: ',
+        "Connection: keep-alive"));
+    curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
+    curl_setopt($curl, CURLOPT_URL, $source.'?query='.urlencode(trim(preg_replace('/\s+/', ' ', $query))));
+
+
+    $resp = curl_exec($curl);
+
+
+    $fail = '';
+
+    $en = curl_errno($curl);
+
+    if ($en) {
+        $fail = 'cURL error @err';
+        $vars = array('@err' => $en);
+    } else {
+        $ht = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        
+        if ($ht != 200) {
+            $fail = 'HTTP response @err';
+            $vars = array('@err' => $ht);
+        }
+    }
+
+    if ($debug) {
+        $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
+
+        watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
+        
+        $resp = substr($resp, $header_size);
+    }
+
+    curl_close($curl);
+
+    if ($fail) {
+        watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
+        
+        return array();
+    }
+
+
+    $resp = json_decode($resp);
+
+    db_delete('ispin_client_councils')->execute();
+
+    $orgs = array();
+
+    foreach ($resp->results->bindings as $v) {
+        $arr = array('unitID' => intval(substr($v->unitURI->value, -15)), 'notation' => $v->notation->value, 'title' => $v->title->value);
+
+        $orgs[] = (object) $arr;
+        
+        db_insert('ispin_client_councils')->fields($arr)->execute();
+    }
+
+    return $orgs;
+}
+
+
+
+/**
+ * Custom content function.
+ *
+ * Returns the notice list for a council specified by the passed notation.
+ *
+ * @return
+ *   A list of notice data.
+ */
+function ispin_client_notices($notation) {
+    $debug = variable_get('ispin_client_debug', 0);
+    $source = variable_get('ispin_client_pin_source', ISPIN_CLIENT_PIN_SOURCE);
+    $query = variable_get('ispin_client_pin_query', ISPIN_CLIENT_PIN_QUERY);
+
+    $curl = curl_init();
+
+    curl_setopt($curl, CURLOPT_HEADER, $debug);
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
+    curl_setopt($curl, CURLOPT_TIMEOUT, 60);
+    curl_setopt($curl, CURLOPT_HTTPHEADER, array(
+        'Accept: application/xml',
+        'Accept-Encoding: ',
+        "Connection: keep-alive"));
+    curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
+    curl_setopt($curl, CURLOPT_URL, $source.'?query='.urlencode(trim(preg_replace('/\s+/', ' ', str_replace('##org##', $notation, $query)))));
+
+    $resp = curl_exec($curl);
+
+
+    $fail = '';
+
+    $en = curl_errno($curl);
+
+    if ($en) {
+        $fail = 'cURL error @err';
+        $vars = array('@err' => $en);
+    } else {
+        $ht = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        
+        if ($ht != 200) {
+            $fail = 'HTTP response @err';
+            $vars = array('@err' => $ht);
+        }
+    }
+
+    if ($debug) {
+        $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
+
+        watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
+        
+        $resp = substr($resp, $header_size);
+    }
+
+    curl_close($curl);
+
+    if ($fail) {
+        watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
+        
+        return array();
+    }
+
+
+    $resp = @json_decode(@json_encode(simplexml_load_string($resp)));
+
+    $att = '@attributes';
+
+    $trans = array();
+
+    foreach ($resp->head->variable as $k=>$v) $trans[$v->$att->name] = $k;
+
+    $ret = array();
+
+    if (empty($resp->results->result)) {
+        $debug = variable_get('ispin_client_debug', 0);
+        $source = variable_get('ispin_client_map_source', ISPIN_CLIENT_MAP_SOURCE);
+        $query = variable_get('ispin_client_map_query', ISPIN_CLIENT_MAP_QUERY);
+
+        $unitID = db_select('ispin_client_councils', 'c')->fields('c', array('unitID'))->condition('notation', $notation)->execute()->fetchField();
+
+        $curl = curl_init();
+
+        curl_setopt($curl, CURLOPT_HEADER, $debug);
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
+        curl_setopt($curl, CURLOPT_TIMEOUT, 60);
+        curl_setopt($curl, CURLOPT_HTTPHEADER, array(
+            'Accept: application/json',
+            'Accept-Encoding: ',
+            "Connection: keep-alive"));
+        curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
+        curl_setopt($curl, CURLOPT_URL, $source.'?query='.urlencode(trim(preg_replace('/\s+/', ' ', str_replace('##org##', $unitID, $query)))));
+
+
+        $resp = curl_exec($curl);
+
+
+        $fail = '';
+
+        $en = curl_errno($curl);
+
+        if ($en) {
+            $fail = 'cURL error @err';
+            $vars = array('@err' => $en);
+        } else {
+            $ht = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            
+            if ($ht != 200) {
+                $fail = 'HTTP response @err';
+                $vars = array('@err' => $ht);
+            }
+        }
+
+        if ($debug) {
+            $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
+
+            watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
+            
+            $resp = substr($resp, $header_size);
+        }
+
+        curl_close($curl);
+
+        if ($fail) {
+            watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
+            
+            return array();
+        }
+
+
+        $resp = json_decode($resp);
+        
+        $e = $resp->results->bindings[0]->easting->value;
+        $n = $resp->results->bindings[0]->northing->value;
+        
+        $ret = array('min_e' => $e - 100000, 'max_e' => $e + 100000, 'min_n' => $n - 100000, 'max_n' => $n + 100000);
+    } else {
+        $max_e = 0;
+        $min_e = 9999999;
+        $max_n = 0;
+        $min_n = 9999999;
+
+        $notices = array();
+
+        foreach ($resp->results->result as $v) {
+            $row = array();
+
+            foreach ($trans as $field=>$pos) $row[$field] = empty($v->binding[$pos]->uri) ? $v->binding[$pos]->literal : $v->binding[$pos]->uri;
+
+            list ($lat, $lon) = explode(' ', $row['coords']);
+
+            $point = new LatLng($lat, $lon);
+            $point->WGS84ToOSGB36();
+            $point = $point->toOSRef();
+
+            $max_e = max($point->easting, $max_e);
+            $min_e = min($point->easting, $min_e);
+            $max_n = max($point->northing, $max_n);
+            $min_n = min($point->northing, $min_n);
+
+            $notices[] = array('e' => $point->easting, 'n' => $point->northing, 'notice' => $row['notice']);
+        }
+        
+        $ret = array('min_e' => $min_e, 'max_e' => $max_e, 'min_n' => $min_n, 'max_n' => $max_n, 'notices' => $notices);
+    }
+
+    drupal_json_output($ret);
+}
