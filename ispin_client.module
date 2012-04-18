@@ -9,6 +9,8 @@
 
 
 
+define('ISPIN_CLIENT_ORG_REFRESH', 7);
+
 define('ISPIN_CLIENT_ORG_SOURCE', 'http://services.data.gov.uk/statistics/sparql');
 
 define('ISPIN_CLIENT_ORG_QUERY', '
@@ -151,6 +153,16 @@ function ispin_client_form($form, &$form_state) {
         '#required' => TRUE,
     );
 
+    $form['ispin_client_org_refresh'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Council source refresh'),
+        '#default_value' => variable_get('ispin_client_org_refresh', ISPIN_CLIENT_ORG_REFRESH),
+        '#size' => 4,
+        '#maxlength' => 3,
+        '#description' => t('Time in days between refreshing council list cache from live data.'),
+        '#required' => TRUE,
+    );
+
     $form['ispin_client_org_source'] = array(
         '#type' => 'textfield',
         '#title' => t('Council source URL'),
@@ -215,6 +227,28 @@ function ispin_client_form($form, &$form_state) {
     return system_settings_form($form);
 }
 
+function ispin_client_form_validate($form, &$form_state) {
+    if ($form_state['values']['ispin_client_os_key'] === '') form_set_error('ispin_client_os_key', t('You must specify your Open Space Key.'));
+    else if (!preg_match('/^[0-9A-F]{32}$/', $form_state['values']['ispin_client_os_key'])) form_set_error('ispin_client_os_key', t('The Open Space Key you have entered is invalid.'));
+
+    if ($form_state['values']['ispin_client_org_refresh'] === '') form_set_error('ispin_client_org_refresh', t('You must specify a refresh frequency for the council list.'));
+    else if (!preg_match('/^[0-9]{1,3}$/', $form_state['values']['ispin_client_org_refresh'])) form_set_error('ispin_client_org_refresh', t('Please enter a valid number of days for the council list refresh frequency.'));
+
+    if ($form_state['values']['ispin_client_org_source'] === '') form_set_error('ispin_client_org_source', t('You must specify a URL to query for the council list.'));
+    else if (!preg_match('|^https?://|', $form_state['values']['ispin_client_org_source'])) $form_state['values']['ispin_client_org_source'] = 'http://'.$form_state['values']['ispin_client_org_source'];
+
+    if ($form_state['values']['ispin_client_org_query'] === '') form_set_error('ispin_client_org_query', t('You must specify a query to retrieve the council list.'));
+
+    if ($form_state['values']['ispin_client_pin_source'] === '') form_set_error('ispin_client_pin_source', t('You must specify a URL to query for the PINs.'));
+    else if (!preg_match('|^https?://|', $form_state['values']['ispin_client_pin_source'])) $form_state['values']['ispin_client_pin_source'] = 'http://'.$form_state['values']['ispin_client_pin_source'];
+
+    if ($form_state['values']['ispin_client_pin_query'] === '') form_set_error('ispin_client_pin_query', t('You must specify a query to retrieve the PINs.'));
+
+    if ($form_state['values']['ispin_client_map_source'] === '') form_set_error('ispin_client_map_source', t('You must specify a URL to query for the council maps.'));
+    else if (!preg_match('|^https?://|', $form_state['values']['ispin_client_map_source'])) $form_state['values']['ispin_client_map_source'] = 'http://'.$form_state['values']['ispin_client_map_source'];
+
+    if ($form_state['values']['ispin_client_map_query'] === '') form_set_error('ispin_client_map_query', t('You must specify a query to retrieve the council maps.'));
+}
 
 
 
@@ -235,7 +269,7 @@ function ispin_client_block_view($delta='') {
                 foreach (ispin_client_councils() as $c) $block['content'] .= '
                 <option notation="'.$c->notation.'" unitID="'.(empty($c->unitID) ? $c->unitid: $c->unitID).'">'.$c->title.'</option>';
                 
-                // Note hack that is required by the pile of wank that is Drupal's fetchAssoc method ^^
+                // Note hack that is required by the pile of rubbish that is Drupal's fetchAssoc method ^^
                 
                 $block['content'] .= '
         </select>
@@ -253,35 +287,16 @@ function ispin_client_block_view($delta='') {
 /**
  * Custom content function.
  *
- * If available, retrieve list of councils from database;
- * if not, retrieve by SPARQL from government site.
+ * Perform a cURL-based SPARQL query;
  *
  * @return
- *   A list of councils.
+ *   The decoded return data.
  */
-function ispin_client_councils() {
-    $query = db_select('ispin_client_councils', 'c')->fields('c', array('unitID', 'notation', 'title'))->orderBy('title', 'ASC')->execute()->fetchAll();
-
-    if (!$query) $query = ispin_client_councils_live();
-    
-    return $query;
-}
-
-
-
-/**
- * Custom content function.
- *
- * Retrieve list of by SPARQL from government site.
- * Run daily by cron and on-demand by ispin_client_councils().
- *
- * @return
- *   A list of councils.
- */
-function ispin_client_councils_live() {
+function ispin_curl($source, $query, $vars=null) {
     $debug = variable_get('ispin_client_debug', 0);
-    $source = variable_get('ispin_client_org_source', ISPIN_CLIENT_ORG_SOURCE);
-    $query = variable_get('ispin_client_org_query', ISPIN_CLIENT_ORG_QUERY);
+
+
+    if (is_array($vars)) foreach ($vars as $k=>$v) $query = str_replace("##{$k}##", $v, $query);
 
 
     $curl = curl_init();
@@ -292,7 +307,7 @@ function ispin_client_councils_live() {
     curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
     curl_setopt($curl, CURLOPT_TIMEOUT, 60);
     curl_setopt($curl, CURLOPT_HTTPHEADER, array(
-        'Accept: application/json',
+        'Accept: application/sparql-results+json',
         'Accept-Encoding: ',
         "Connection: keep-alive"));
     curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
@@ -321,7 +336,7 @@ function ispin_client_councils_live() {
     if ($debug) {
         $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
 
-        watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
+        watchdog('ispin_client', 'Calling '.$source.'... HTTP header:<br/>'.nl2br(substr($resp, 0, $header_size)), array());
         
         $resp = substr($resp, $header_size);
     }
@@ -329,7 +344,7 @@ function ispin_client_councils_live() {
     curl_close($curl);
 
     if ($fail) {
-        watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
+        watchdog('ispin_client', 'Failed calling '.$source.'...<br/>'.$fail, $vars, WATCHDOG_ERROR);
         
         return array();
     }
@@ -337,11 +352,60 @@ function ispin_client_councils_live() {
 
     $resp = json_decode($resp);
 
+    return $resp->results->bindings;
+}
+
+
+
+
+/**
+ * Custom content function.
+ *
+ * If available, retrieve list of councils from database;
+ * if not, retrieve by SPARQL from government site.
+ *
+ * @return
+ *   A list of councils.
+ */
+function ispin_client_councils() {
+    $debug = variable_get('ispin_client_debug', 0);
+
+    $ret = false;
+
+    if (variable_get('ispin_client_org_last_refresh', 0) + variable_get('ispin_client_org_refresh', ISPIN_CLIENT_ORG_REFRESH) * 86400 < time()) {
+        variable_set('ispin_client_org_last_refresh', time());
+
+        if ($debug) watchdog('ispin_client', 'Forcing reload of council list from live data (refresh timed out)', array());
+    } else {
+        $ret = db_select('ispin_client_councils', 'c')->fields('c', array('unitID', 'notation', 'title'))->orderBy('title', 'ASC')->execute()->fetchAll();
+
+        if ($debug) watchdog('ispin_client', $ret ? 'Loaded council list from cache' : 'Loading council list from cache failed (cache empty?): reload from live data', array());
+    }
+
+    if (!$ret) $ret = ispin_client_councils_live();
+    
+    return $ret;
+}
+
+
+
+/**
+ * Custom content function.
+ *
+ * Retrieve list of by SPARQL from government site.
+ * Run daily by cron and on-demand by ispin_client_councils().
+ *
+ * @return
+ *   A list of councils.
+ */
+function ispin_client_councils_live() {
+    $resp = ispin_curl(variable_get('ispin_client_org_source', ISPIN_CLIENT_ORG_SOURCE), variable_get('ispin_client_org_query', ISPIN_CLIENT_ORG_QUERY));
+
     db_delete('ispin_client_councils')->execute();
 
     $orgs = array();
 
-    foreach ($resp->results->bindings as $v) {
+    foreach ($resp as $v) {
         $arr = array('unitID' => intval(substr($v->unitURI->value, -15)), 'notation' => $v->notation->value, 'title' => $v->title->value);
 
         $orgs[] = (object) $arr;
@@ -364,134 +428,25 @@ function ispin_client_councils_live() {
  */
 function ispin_client_notices($notation) {
     $debug = variable_get('ispin_client_debug', 0);
-    $source = variable_get('ispin_client_pin_source', ISPIN_CLIENT_PIN_SOURCE);
-    $query = variable_get('ispin_client_pin_query', ISPIN_CLIENT_PIN_QUERY);
 
-    $curl = curl_init();
+    if ($debug) watchdog('ispin_client', 'Fetching PIN list for council '.$notation, array());
 
-    curl_setopt($curl, CURLOPT_HEADER, $debug);
-    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
-    curl_setopt($curl, CURLOPT_TIMEOUT, 60);
-    curl_setopt($curl, CURLOPT_HTTPHEADER, array(
-        'Accept: application/xml',
-        'Accept-Encoding: ',
-        "Connection: keep-alive"));
-    curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
-    curl_setopt($curl, CURLOPT_URL, $source.'?query='.urlencode(trim(preg_replace('/\s+/', ' ', str_replace('##org##', $notation, $query)))));
+    $resp = ispin_curl(variable_get('ispin_client_pin_source', ISPIN_CLIENT_PIN_SOURCE), variable_get('ispin_client_pin_query', ISPIN_CLIENT_PIN_QUERY), array('org' => $notation));
 
-    $resp = curl_exec($curl);
-
-
-    $fail = '';
-
-    $en = curl_errno($curl);
-
-    if ($en) {
-        $fail = 'cURL error @err';
-        $vars = array('@err' => $en);
-    } else {
-        $ht = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        
-        if ($ht != 200) {
-            $fail = 'HTTP response @err';
-            $vars = array('@err' => $ht);
-        }
-    }
-
-    if ($debug) {
-        $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-
-        watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
-        
-        $resp = substr($resp, $header_size);
-    }
-
-    curl_close($curl);
-
-    if ($fail) {
-        watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
-        
-        return array();
-    }
-
-
-    $resp = @json_decode(@json_encode(simplexml_load_string($resp)));
-
-    $att = '@attributes';
-
-    $trans = array();
-
-    foreach ($resp->head->variable as $k=>$v) $trans[$v->$att->name] = $k;
-
-    $ret = array();
-
-    if (empty($resp->results->result)) {
-        $debug = variable_get('ispin_client_debug', 0);
-        $source = variable_get('ispin_client_map_source', ISPIN_CLIENT_MAP_SOURCE);
-        $query = variable_get('ispin_client_map_query', ISPIN_CLIENT_MAP_QUERY);
+    if (empty($resp)) {
+        if ($debug) watchdog('ispin_client', 'No PINs returned: fetch council centre for overview map', array());
 
         $unitID = db_select('ispin_client_councils', 'c')->fields('c', array('unitID'))->condition('notation', $notation)->execute()->fetchField();
 
-        $curl = curl_init();
-
-        curl_setopt($curl, CURLOPT_HEADER, $debug);
-        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 20);
-        curl_setopt($curl, CURLOPT_TIMEOUT, 60);
-        curl_setopt($curl, CURLOPT_HTTPHEADER, array(
-            'Accept: application/json',
-            'Accept-Encoding: ',
-            "Connection: keep-alive"));
-        curl_setopt($curl, CURLOPT_USERAGENT, 'TellMe cURL agent v0.1');
-        curl_setopt($curl, CURLOPT_URL, $source.'?query='.urlencode(trim(preg_replace('/\s+/', ' ', str_replace('##org##', $unitID, $query)))));
-
-
-        $resp = curl_exec($curl);
-
-
-        $fail = '';
-
-        $en = curl_errno($curl);
-
-        if ($en) {
-            $fail = 'cURL error @err';
-            $vars = array('@err' => $en);
-        } else {
-            $ht = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-            
-            if ($ht != 200) {
-                $fail = 'HTTP response @err';
-                $vars = array('@err' => $ht);
-            }
-        }
-
-        if ($debug) {
-            $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-
-            watchdog('ispin_client', 'HTTP header: @head', array('@head' => substr($resp, 0, $header_size)));
-            
-            $resp = substr($resp, $header_size);
-        }
-
-        curl_close($curl);
-
-        if ($fail) {
-            watchdog('ispin_client', $fail, $vars, WATCHDOG_ERROR);
-            
-            return array();
-        }
-
-
-        $resp = json_decode($resp);
+        $resp = ispin_curl(variable_get('ispin_client_map_source', ISPIN_CLIENT_MAP_SOURCE), variable_get('ispin_client_map_query', ISPIN_CLIENT_MAP_QUERY), array('org' => $unitID));
         
-        $e = $resp->results->bindings[0]->easting->value;
-        $n = $resp->results->bindings[0]->northing->value;
+        $e = $resp[0]->easting->value;
+        $n = $resp[0]->northing->value;
         
         $ret = array('min_e' => $e - 100000, 'max_e' => $e + 100000, 'min_n' => $n - 100000, 'max_n' => $n + 100000);
     } else {
+        if ($debug) watchdog('ispin_client', 'Processing returned PINs...', array());
+
         $max_e = 0;
         $min_e = 9999999;
         $max_n = 0;
@@ -499,12 +454,8 @@ function ispin_client_notices($notation) {
 
         $notices = array();
 
-        foreach ($resp->results->result as $v) {
-            $row = array();
-
-            foreach ($trans as $field=>$pos) $row[$field] = empty($v->binding[$pos]->uri) ? $v->binding[$pos]->literal : $v->binding[$pos]->uri;
-
-            list ($lat, $lon) = explode(' ', $row['coords']);
+        foreach ($resp as $v) {
+            list ($lat, $lon) = explode(' ', $v->coords->value);
 
             $point = new LatLng($lat, $lon);
             $point->WGS84ToOSGB36();
@@ -515,7 +466,7 @@ function ispin_client_notices($notation) {
             $max_n = max($point->northing, $max_n);
             $min_n = min($point->northing, $min_n);
 
-            $notices[] = array('e' => $point->easting, 'n' => $point->northing, 'notice' => $row['notice']);
+            $notices[] = array('e' => $point->easting, 'n' => $point->northing, 'notice' => $v->notice->value);
         }
         
         $ret = array('min_e' => $min_e, 'max_e' => $max_e, 'min_n' => $min_n, 'max_n' => $max_n, 'notices' => $notices);
