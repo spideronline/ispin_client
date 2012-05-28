@@ -103,8 +103,10 @@ function ispin_client_block_info() {
  * Implements hook_init().
  */
 function ispin_client_init() {
-    drupal_add_js('http://openspace.ordnancesurvey.co.uk/osmapapi/openspace.js?key='.variable_get('ispin_client_os_key', ''), 'external');
-    drupal_add_js(drupal_get_path('module', 'ispin_client').'/ispin_client.js');
+    if ($_GET['q'] == 'node/731') { // Only works on spider site!!!!
+        drupal_add_js('http://openspace.ordnancesurvey.co.uk/osmapapi/openspace.js?key='.variable_get('ispin_client_os_key', ''), 'external');
+        drupal_add_js(drupal_get_path('module', 'ispin_client').'/ispin_client.js');
+    }
 }
 
 

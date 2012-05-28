@@ -31,6 +31,14 @@ function dump_obj(obj, ind) {
 }
 
 
+function doZoom() {
+    var bounds = top.boundLayer.getDataExtent();
+
+    if (bounds) top.osMap.setCenter(bounds.getCenterLonLat(), top.osMap.baseLayer.getZoomForExtent(bounds));
+    else setTimeout('doZoom()', 100);
+};
+
+
 (function ($) {
     $(function() {
         $('#ispin_client_council').change(function() {
@@ -45,11 +53,6 @@ function dump_obj(obj, ind) {
                     if (data) {
                         var osMap = new OpenSpace.Map('ispin_client_map');
                         var markers = osMap.getMarkerLayer();
-
-                        osMap.events.register('loadend', osMap, function(e) {
-                            alert('loaded');
-                        });
-
 
 
                         var symbolizer = OpenLayers.Util.applyDefaults({ }, OpenLayers.Feature.Vector.style['default']);
@@ -67,33 +70,28 @@ function dump_obj(obj, ind) {
 
                         styleMap.addUniqueValueRules('default', 'AREA_CODE', lookup);
 
-
                         var boundLayer = new OpenSpace.Layer.Boundary('Boundaries',  { strategies: [new OpenSpace.Strategy.BBOX()], area_code: ['UTA'], admin_unit_ids: [top.unitID], styleMap: styleMap });
 
-                        osMap.addLayer(boundLayer);
 
-//                        boundLayer.refresh();
+                        osMap.addLayer(boundLayer);
 
 
                         var bounds = new OpenLayers.Bounds();
 
+                        bounds.extend(new OpenLayers.LonLat(data.min_e, data.min_n));
+                        bounds.extend(new OpenLayers.LonLat(data.max_e, data.max_n));
+
+                        osMap.setCenter(new OpenSpace.MapPoint((data.max_e + data.min_e) / 2, (data.max_n + data.min_n) / 2), osMap.baseLayer.getZoomForExtent(bounds));
+
                         if (typeof data.notices == 'undefined') {
-//                            bounds = boundLayer.getDataExtent();
-//                            osMap.setCenter(bounds.getCenterLonLat(), osMap.baseLayer.getZoomForExtent(bounds));
-                            bounds.extend(new OpenLayers.LonLat(data.min_e, data.min_n));
-                            bounds.extend(new OpenLayers.LonLat(data.max_e, data.max_n));
-
-                            osMap.setCenter(new OpenSpace.MapPoint((data.max_e + data.min_e) / 2, (data.max_n + data.min_n) / 2), osMap.baseLayer.getZoomForExtent(bounds));
+                            top.osMap = osMap;
+                            top.boundLayer = boundLayer;
+                            
+                            setTimeout('doZoom()', 100);
                         } else {
-                            bounds.extend(new OpenLayers.LonLat(data.min_e, data.min_n));
-                            bounds.extend(new OpenLayers.LonLat(data.max_e, data.max_n));
-
-                            osMap.setCenter(new OpenSpace.MapPoint((data.max_e + data.min_e) / 2, (data.max_n + data.min_n) / 2), osMap.baseLayer.getZoomForExtent(bounds));
-
                             osMap.raiseLayer(markers, 1);
 
-                            for (var i=0; i<data.notices.length; i++)
-                                osMap.createMarker(new OpenSpace.MapPoint(data.notices[i].e, data.notices[i].n), null, '<a href="' + data.notices[i].notice + '">Notice</a>', new OpenSpace.ScreenSize(150, 90));
+                            for (var i=0; i<data.notices.length; i++) osMap.createMarker(new OpenSpace.MapPoint(data.notices[i].e, data.notices[i].n), null, '<a href="' + data.notices[i].notice + '">Notice</a>', new OpenSpace.ScreenSize(150, 90));
                         }
                     }
                 });
